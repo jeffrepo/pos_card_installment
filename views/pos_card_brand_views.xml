@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_pos_card_brand_tree" model="ir.ui.view">
+        <field name="name">pos.card.brand.tree</field>
+        <field name="model">pos.card.brand</field>
+        <field name="arch" type="xml">
+            <tree>
+                <field name="name"/>
+                <field name="company_id" groups="base.group_multi_company"/>
+                <field name="active"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="view_pos_card_brand_form" model="ir.ui.view">
+        <field name="name">pos.card.brand.form</field>
+        <field name="model">pos.card.brand</field>
+        <field name="arch" type="xml">
+            <form>
+                <sheet>
+                    <group>
+                        <field name="name"/>
+                        <field name="company_id" groups="base.group_multi_company"/>
+                        <field name="active"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_pos_card_brand" model="ir.actions.act_window">
+        <field name="name">Tarjetas POS</field>
+        <field name="res_model">pos.card.brand</field>
+        <field name="view_mode">tree,form</field>
+    </record>
+
+    <menuitem id="menu_pos_card_brand"
+              name="Tarjetas"
+              parent="point_of_sale.menu_point_of_sale_configuration"
+              action="action_pos_card_brand"
+              sequence="96"
+              groups="point_of_sale.group_pos_manager"/>
+</odoo>

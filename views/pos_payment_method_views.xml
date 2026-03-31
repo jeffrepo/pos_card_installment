@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_pos_payment_method_form_pci" model="ir.ui.view">
+        <field name="name">pos.payment.method.form.pci</field>
+        <field name="model">pos.payment.method</field>
+        <field name="inherit_id" ref="point_of_sale.pos_payment_method_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//sheet//group" position="inside">
+                <group string="Tarjetas / Cuotas POS">
+                    <field name="pci_use_card_installment"/>
+                    <field name="pci_default_brand_id" invisible="not pci_use_card_installment"/>
+                    <field name="pci_journal_id" invisible="not pci_use_card_installment" required="pci_use_card_installment"/>
+                    <field name="pci_debit_note_product_id" invisible="not pci_use_card_installment" required="pci_use_card_installment"/>
+                    <field name="pci_document_type_id" invisible="not pci_use_card_installment" required="pci_use_card_installment"/>
+                </group>
+            </xpath>
+        </field>
+    </record>
+</odoo>
