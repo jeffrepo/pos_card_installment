@@ -1,36 +1,74 @@
-from odoo import fields, models
+from odoo import api, fields, models
 
 
 class PosPaymentMethod(models.Model):
     _inherit = "pos.payment.method"
 
-    pci_use_card_installment = fields.Boolean(string="Usa tarjeta/cuotas en POS")
-    pci_default_brand_id = fields.Many2one("pos.card.brand", string="Tarjeta por defecto")
-    pci_journal_id = fields.Many2one(
+    pci_use_installments = fields.Boolean(
+        string="Usar tarjeta/cuotas en POS",
+        help="If enabled, the POS payment screen will ask for card, installment plan "
+             "and net amount using the existing financing surcharge models."
+    )
+    pci_force_invoice = fields.Boolean(
+        string="Forzar factura",
+        default=True,
+        help="When enabled, POS orders paid with this method will be invoiced automatically "
+             "so the debit note can be linked to the generated invoice."
+    )
+    pci_payment_method_line_id = fields.Many2one(
+        "account.payment.method.line",
+        string="Línea de método de pago contable",
+        help="Existing accounting payment method line used only as a source of available cards."
+    )
+    pci_debit_note_journal_id = fields.Many2one(
         "account.journal",
-        string="Diario Nota de Débito",
-        domain="[('type', '=', 'sale'), ('company_id', '=', company_id)]",
-        help="Diario usado para crear la ND del recargo financiero.",
+        string="Diario para nota de débito",
+        domain=[("type", "=", "sale")],
+        help="If empty, the POS invoice journal will be reused."
     )
-    pci_debit_note_product_id = fields.Many2one(
-        "product.product",
-        string="Producto para recargo",
-        domain="[('sale_ok', '=', True)]",
-        help="Producto usado en la línea de la ND para el recargo financiero.",
-    )
-    pci_document_type_id = fields.Many2one(
-        "l10n_latam.document.type",
-        string="Tipo comprobante ND",
-        domain="[('country_id.code', '=', 'AR'), ('internal_type', '=', 'debit_note')]",
-        help="Tipo de comprobante argentino para la nota de débito.",
+    pci_card_data = fields.Json(
+        string="Card payload for POS",
+        compute="_compute_pci_card_data",
+        compute_sudo=True,
     )
 
-    def _load_pos_data_fields(self, config_id):
-        fields_list = super()._load_pos_data_fields(config_id)
-        return fields_list + [
-            "pci_use_card_installment",
-            "pci_default_brand_id",
-            "pci_journal_id",
-            "pci_debit_note_product_id",
-            "pci_document_type_id",
+    @api.depends(
+        "pci_use_installments",
+        "pci_payment_method_line_id",
+        "pci_payment_method_line_id.available_card_ids",
+        "pci_payment_method_line_id.available_card_ids.installment_ids",
+        "pci_payment_method_line_id.available_card_ids.installment_ids.surcharge_coefficient",
+    )
+    def _compute_pci_card_data(self):
+        for rec in self:
+            payload = []
+            if rec.pci_use_installments and rec.pci_payment_method_line_id:
+                for card in rec.pci_payment_method_line_id.available_card_ids:
+                    payload.append({
+                        "id": card.id,
+                        "name": card.display_name or card.name,
+                        "installments": [
+                            {
+                                "id": inst.id,
+                                "name": inst.display_name or inst.name,
+                                "surcharge_coefficient": inst.surcharge_coefficient or 1.0,
+                            }
+                            for inst in card.installment_ids
+                        ],
+                    })
+            rec.pci_card_data = payload
+
+    @api.model
+    def _load_pos_data_fields(self, config):
+        fields_list = super()._load_pos_data_fields(config)
+        extra = [
+            "pci_use_installments",
+            "pci_force_invoice",
+            "pci_payment_method_line_id",
+            "pci_debit_note_journal_id",
+            "pci_card_data",
         ]
+        for name in extra:
+            if name not in fields_list:
+                fields_list.append(name)
+        return fields_list

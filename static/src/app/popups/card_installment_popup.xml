@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates id="template" xml:space="preserve">
+    <t t-name="pos_card_installment.CardInstallmentPopup">
+        <Dialog title="props.title || 'Tarjeta y cuotas'" size="'md'">
+            <div class="p-3">
+                <div class="mb-3">
+                    <label class="form-label">Método de pago</label>
+                    <input class="form-control" t-att-value="props.paymentMethod.name" readonly="readonly"/>
+                </div>
+
+                <div class="row g-3">
+                    <div class="col-12 col-md-6">
+                        <label class="form-label">Tarjeta</label>
+                        <select class="form-select" t-on-change="onCardChange">
+                            <option t-if="!cards.length" value="">Sin tarjetas configuradas</option>
+                            <t t-foreach="cards" t-as="card" t-key="card.id">
+                                <option t-att-value="card.id" t-att-selected="card.id === state.cardId ? true : undefined">
+                                    <t t-esc="card.name"/>
+                                </option>
+                            </t>
+                        </select>
+                    </div>
+
+                    <div class="col-12 col-md-6">
+                        <label class="form-label">Cuotas</label>
+                        <select class="form-select" t-on-change="onInstallmentChange">
+                            <option t-if="!installments.length" value="">Sin planes configurados</option>
+                            <t t-foreach="installments" t-as="inst" t-key="inst.id">
+                                <option t-att-value="inst.id" t-att-selected="inst.id === state.installmentId ? true : undefined">
+                                    <t t-esc="inst.name"/>
+                                </option>
+                            </t>
+                        </select>
+                    </div>
+
+                    <div class="col-12">
+                        <label class="form-label">Monto neto</label>
+                        <input type="number" step="0.01" class="form-control" t-att-value="state.netAmount" t-on-input="onNetAmountInput"/>
+                    </div>
+
+                    <div class="col-12 col-md-4">
+                        <label class="form-label">Coeficiente</label>
+                        <input class="form-control" t-att-value="surchargeCoefficient" readonly="readonly"/>
+                    </div>
+                    <div class="col-12 col-md-4">
+                        <label class="form-label">Recargo</label>
+                        <input class="form-control" t-att-value="surchargeAmount" readonly="readonly"/>
+                    </div>
+                    <div class="col-12 col-md-4">
+                        <label class="form-label">Importe total</label>
+                        <input class="form-control" t-att-value="totalAmount" readonly="readonly"/>
+                    </div>
+                </div>
+            </div>
+
+            <t t-set-slot="footer">
+                <button class="btn btn-secondary" t-on-click="cancel">Cancelar</button>
+                <button class="btn btn-primary"
+                        t-att-disabled="!state.cardId || !state.installmentId || !(state.netAmount > 0)"
+                        t-on-click="confirm">
+                    Confirmar
+                </button>
+            </t>
+        </Dialog>
+    </t>
+</templates>

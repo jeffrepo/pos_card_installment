@@ -1,99 +1,126 @@
-from odoo import Command, api, fields, models, _
+from odoo import _, fields, models
 from odoo.exceptions import UserError
 
 
 class PosOrder(models.Model):
     _inherit = "pos.order"
 
-    pci_surcharge_total = fields.Monetary(string="Recargo total", currency_field="currency_id", compute="_compute_pci_amounts", store=True)
-    pci_net_total = fields.Monetary(string="Monto neto tarjetas", currency_field="currency_id", compute="_compute_pci_amounts", store=True)
-    pci_debit_note_move_id = fields.Many2one("account.move", string="Nota de Débito")
-
-    @api.depends("payment_ids.pci_surcharge_amount", "payment_ids.pci_net_amount")
-    def _compute_pci_amounts(self):
+    def _generate_pos_order_invoice(self):
+        moves = super()._generate_pos_order_invoice()
         for order in self:
-            order.pci_surcharge_total = sum(order.payment_ids.mapped("pci_surcharge_amount"))
-            order.pci_net_total = sum(order.payment_ids.mapped("pci_net_amount"))
+            order._pci_create_financing_surcharge_notes()
+        return moves
 
+    def _pci_create_financing_surcharge_notes(self):
+        for order in self:
+            if not order.account_move:
+                continue
+            surcharge_payments = order.payment_ids.filtered(
+                lambda p: p.installment_id and p.financing_surcharge > 0 and not p.pci_debit_note_move_id
+            )
+            if not surcharge_payments:
+                continue
+            if not order.partner_id:
+                raise UserError(_("A customer is required to generate the debit note for card installments."))
+            if not order.to_invoice:
+                raise UserError(_("The order must be invoiced in order to generate the debit note for card installments."))
 
-    def _payment_fields(self, order, ui_paymentline):
-        res = super()._payment_fields(order, ui_paymentline)
-        res.update({
-            "pci_payment_method_label": ui_paymentline.get("pci_payment_method_label"),
-            "pci_card_brand_id": ui_paymentline.get("pci_card_brand_id") or False,
-            "pci_installment_plan_id": ui_paymentline.get("pci_installment_plan_id") or False,
-            "pci_installments": ui_paymentline.get("pci_installments") or 1,
-            "pci_net_amount": ui_paymentline.get("pci_net_amount") or ui_paymentline.get("amount") or 0.0,
-            "pci_surcharge_amount": ui_paymentline.get("pci_surcharge_amount") or 0.0,
-            "pci_total_amount": ui_paymentline.get("pci_total_amount") or ui_paymentline.get("amount") or 0.0,
+            for payment in surcharge_payments:
+                note = order._pci_create_debit_note_for_payment(payment)
+                payment.pci_debit_note_move_id = note.id
+                order._pci_reconcile_payment_extra_with_note(payment, note)
+
+    def _pci_create_debit_note_for_payment(self, payment):
+        self.ensure_one()
+        product = self.company_id.product_surcharge_id
+        if not product:
+            raise UserError(
+                _("To validate POS payments with installments you must configure the surcharge product on the company.")
+            )
+
+        journal = payment.payment_method_id.pci_debit_note_journal_id or self.config_id.invoice_journal_id
+        if not journal:
+            journal = self.env["account.journal"].search(
+                [("type", "=", "sale"), ("company_id", "=", self.company_id.id)],
+                limit=1,
+            )
+        if not journal:
+            raise UserError(_("No sale journal was found to create the debit note."))
+
+        move_type = "out_invoice"
+        draft_move = self.env["account.move"].new({
+            "move_type": move_type,
+            "journal_id": journal.id,
+            "partner_id": self.partner_id.id,
+            "company_id": self.company_id.id,
         })
-        return res
+        document_types = draft_move.l10n_latam_available_document_type_ids.filtered(
+            lambda x: x.internal_type == "debit_note"
+        )
+        document_type = document_types[:1] or draft_move.l10n_latam_document_type_id
+        taxes = product.taxes_id.filtered(lambda t: t.company_id == self.company_id)
+        untaxed_amount = self._pci_compute_untaxed_amount(payment.financing_surcharge, taxes)
 
-    def _process_saved_order(self, order):
-        res = super()._process_saved_order(order)
-        for pos_order in self:
-            pos_order._pci_create_debit_note_if_needed()
-        return res
+        description_parts = [
+            _("POS financing surcharge"),
+            payment.payment_method_id.display_name,
+        ]
+        if payment.card_id:
+            description_parts.append(payment.card_id.display_name)
+        if payment.installment_id:
+            description_parts.append(payment.installment_id.display_name)
+        description = " - ".join([x for x in description_parts if x])
 
-    def _prepare_invoice_vals(self):
-        vals = super()._prepare_invoice_vals()
-        if self.pci_surcharge_total and not vals.get("invoice_origin"):
-            vals["invoice_origin"] = self.name
-        return vals
+        note_vals = {
+            "ref": f"{description} [{payment.uuid}]",
+            "date": fields.Date.context_today(self),
+            "invoice_date": fields.Date.context_today(self),
+            "invoice_origin": self.name,
+            "journal_id": journal.id,
+            "invoice_user_id": self.user_id.id,
+            "partner_id": self.partner_id.id,
+            "move_type": move_type,
+            "l10n_latam_document_type_id": document_type.id if document_type else False,
+            "debit_origin_id": self.account_move.id,
+            "invoice_line_ids": [
+                (
+                    0,
+                    0,
+                    {
+                        "product_id": product.id,
+                        "name": description,
+                        "price_unit": untaxed_amount,
+                        "tax_ids": [(6, 0, taxes.ids)],
+                    },
+                )
+            ],
+        }
+        note = self.env["account.move"].create(note_vals)
+        note.action_post()
+        return note
 
-    def _pci_get_card_payments(self):
+    def _pci_compute_untaxed_amount(self, total_amount, taxes):
         self.ensure_one()
-        return self.payment_ids.filtered(lambda p: p.pci_surcharge_amount > 0 and p.payment_method_id.pci_use_card_installment)
+        taxes = taxes.filtered(lambda t: t.company_id == self.company_id)
+        if not taxes:
+            return total_amount
+        return taxes.filtered(lambda t: not t.price_include).with_context(force_price_include=True).compute_all(
+            total_amount, currency=self.currency_id
+        )["total_excluded"]
 
-    def _pci_get_origin_invoice(self):
+    def _pci_reconcile_payment_extra_with_note(self, payment, note):
         self.ensure_one()
-        if getattr(self, "account_move", False):
-            return self.account_move
-        if hasattr(self, "account_move_id") and self.account_move_id:
-            return self.account_move_id
-        return False
-
-    def _pci_create_debit_note_if_needed(self):
-        for order in self:
-            if order.pci_debit_note_move_id or not order.pci_surcharge_total:
-                continue
-            invoice = order._pci_get_origin_invoice()
-            if not invoice:
-                continue
-
-            first_payment = order._pci_get_card_payments()[:1]
-            if not first_payment:
-                continue
-
-            payment_method = first_payment.payment_method_id
-            if not payment_method.pci_journal_id:
-                raise UserError(_("Configura el diario de Nota de Débito en el método de pago POS '%s'.") % payment_method.display_name)
-            if not payment_method.pci_debit_note_product_id:
-                raise UserError(_("Configura el producto de recargo en el método de pago POS '%s'.") % payment_method.display_name)
-            if not payment_method.pci_document_type_id:
-                raise UserError(_("Configura el tipo de comprobante ND en el método de pago POS '%s'.") % payment_method.display_name)
-
-            line_name = _("Recargo financiero POS %s") % order.name
-            debit_note_vals = {
-                "move_type": "out_invoice",
-                "partner_id": order.partner_id.id,
-                "invoice_date": fields.Date.context_today(order),
-                "invoice_origin": order.name,
-                "journal_id": payment_method.pci_journal_id.id,
-                "currency_id": order.currency_id.id,
-                "invoice_user_id": order.user_id.id,
-                "l10n_latam_document_type_id": payment_method.pci_document_type_id.id,
-                "debit_origin_id": invoice.id,
-                "invoice_line_ids": [
-                    Command.create({
-                        "product_id": payment_method.pci_debit_note_product_id.id,
-                        "name": line_name,
-                        "quantity": 1.0,
-                        "price_unit": order.pci_surcharge_total,
-                        "tax_ids": [Command.set(payment_method.pci_debit_note_product_id.taxes_id.filtered(lambda t: t.company_id == order.company_id).ids)],
-                    })
-                ],
-            }
-            debit_note = self.env["account.move"].with_company(order.company_id).create(debit_note_vals)
-            debit_note.action_post()
-            order.pci_debit_note_move_id = debit_note.id
+        payment_lines = payment.account_move_id.line_ids.filtered(
+            lambda line: not line.reconciled
+            and line.account_id.account_type == "asset_receivable"
+            and line.partner_id.commercial_partner_id == self.partner_id.commercial_partner_id
+        )
+        note_lines = note.line_ids.filtered(
+            lambda line: not line.reconciled and line.account_id.account_type == "asset_receivable"
+        )
+        if not payment_lines or not note_lines:
+            return
+        common_accounts = payment_lines.mapped("account_id") & note_lines.mapped("account_id")
+        for account in common_accounts:
+            (payment_lines.filtered(lambda l: l.account_id == account) +
+             note_lines.filtered(lambda l: l.account_id == account)).reconcile()
