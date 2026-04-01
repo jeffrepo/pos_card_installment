@@ -40,7 +40,7 @@
 
                     <div class="col-12 col-md-4">
                         <label class="form-label">Coeficiente</label>
-                        <input class="form-control" t-att-value="surchargeCoefficient" readonly="readonly"/>
+                        <input class="form-control" t-att-value="coefficient" readonly="readonly"/>
                     </div>
                     <div class="col-12 col-md-4">
                         <label class="form-label">Recargo</label>

@@ -1,9 +1,9 @@
 {
     "name": "POS Card Installment",
-    "version": "19.0.1.0.0",
+    "version": "19.0.1.0.1",
     "summary": "Card/installment selection in POS reusing existing payment surcharge logic",
     "category": "Point of Sale",
-    "author": "OpenAI",
+    "author": "Silva",
     "license": "LGPL-3",
     "depends": [
         "point_of_sale",
@@ -16,12 +16,9 @@
     ],
     "assets": {
         "point_of_sale._assets_pos": [
-            "pos_card_installment/static/src/app/models/payment_patch.js",
-            "pos_card_installment/static/src/app/models/order_patch.js",
             "pos_card_installment/static/src/app/popups/card_installment_popup.js",
             "pos_card_installment/static/src/app/popups/card_installment_popup.xml",
-            "pos_card_installment/static/src/app/screens/payment_screen_patch.js",
-            "pos_card_installment/static/src/app/screens/order_payment_validation_patch.js"
+            "pos_card_installment/static/src/app/screens/payment_screen_patch.js"
         ]
     },
     "installable": True,

@@ -21,7 +21,8 @@ patch(PaymentScreen.prototype, {
     async addNewPaymentLine(paymentMethod) {
         await super.addNewPaymentLine(...arguments);
 
-        const line = this.currentOrder?.selected_paymentline || this.currentOrder?.payment_ids?.at(-1);
+        const order = this.currentOrder;
+        const line = order?.selected_paymentline || order?.payment_ids?.at(-1);
         if (!line || !paymentMethod?.pci_use_installments) {
             return;
         }
@@ -32,20 +33,19 @@ patch(PaymentScreen.prototype, {
                 title: _t("No cards configured"),
                 body: _t("This payment method has installments enabled but no cards are configured on the linked accounting payment method line."),
             });
-            this.currentOrder.removePaymentline(line);
+            order.removePaymentline(line);
             return;
         }
 
-        const remaining = Math.max(this.currentOrder.getDue() || 0, 0);
+        const baseNet = Math.max(order.getDue() || 0, 0);
         const result = await makeAwaitable(this.dialog, CardInstallmentPopup, {
             title: _t("Tarjeta y cuotas"),
             paymentMethod,
-            netAmount: remaining,
-            currencySymbol: this.pos.currency?.symbol,
+            netAmount: baseNet,
         });
 
         if (!result?.confirmed) {
-            this.currentOrder.removePaymentline(line);
+            order.removePaymentline(line);
             return;
         }
 
@@ -53,13 +53,28 @@ patch(PaymentScreen.prototype, {
         line.card_id = payload.card_id;
         line.installment_id = payload.installment_id;
         line.net_amount = payload.net_amount;
-        line.pci_financing_surcharge = payload.financing_surcharge;
+        line.financing_surcharge = payload.financing_surcharge;
         line.pci_card_name = payload.card_name;
         line.pci_installment_name = payload.installment_name;
         setPaymentAmount(line, payload.total_amount);
 
-        if (paymentMethod.pci_force_invoice && typeof this.currentOrder.setToInvoice === "function") {
-            this.currentOrder.setToInvoice(true);
+        const origExport = line.export_as_JSON ? line.export_as_JSON.bind(line) : null;
+        if (origExport && !line._pciWrappedExport) {
+            line.export_as_JSON = function () {
+                const json = origExport();
+                json.card_id = this.card_id || false;
+                json.installment_id = this.installment_id || false;
+                json.net_amount = this.net_amount || 0;
+                json.financing_surcharge = this.financing_surcharge || 0;
+                json.pci_card_name = this.pci_card_name || "";
+                json.pci_installment_name = this.pci_installment_name || "";
+                return json;
+            };
+            line._pciWrappedExport = true;
+        }
+
+        if (paymentMethod.pci_force_invoice && typeof order.setToInvoice === "function") {
+            order.setToInvoice(true);
         }
     },
 });

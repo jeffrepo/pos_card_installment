@@ -5,6 +5,21 @@ from odoo.exceptions import UserError
 class PosOrder(models.Model):
     _inherit = "pos.order"
 
+    def _payment_fields(self, order, ui_paymentline):
+        vals = super()._payment_fields(order, ui_paymentline)
+        vals.update({
+            "card_id": ui_paymentline.get("card_id") or False,
+            "installment_id": ui_paymentline.get("installment_id") or False,
+            "net_amount": ui_paymentline.get("net_amount") or ui_paymentline.get("amount") or 0.0,
+        })
+        return vals
+
+    def _order_fields(self, ui_order):
+        vals = super()._order_fields(ui_order)
+        if any((p.get("financing_surcharge") or 0.0) > 0 for p in ui_order.get("statement_ids", [])):
+            vals["to_invoice"] = True
+        return vals
+
     def _generate_pos_order_invoice(self):
         moves = super()._generate_pos_order_invoice()
         for order in self:
@@ -110,6 +125,8 @@ class PosOrder(models.Model):
 
     def _pci_reconcile_payment_extra_with_note(self, payment, note):
         self.ensure_one()
+        if not payment.account_move_id:
+            return
         payment_lines = payment.account_move_id.line_ids.filtered(
             lambda line: not line.reconciled
             and line.account_id.account_type == "asset_receivable"

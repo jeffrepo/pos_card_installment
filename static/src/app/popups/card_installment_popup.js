@@ -11,19 +11,21 @@ export class CardInstallmentPopup extends Component {
         title: { type: String, optional: true },
         paymentMethod: Object,
         netAmount: Number,
-        currencySymbol: { type: String, optional: true },
     };
 
     setup() {
         const cards = this.props.paymentMethod.pci_card_data || [];
         const firstCard = cards.length ? cards[0] : null;
         const firstInstallment = firstCard && firstCard.installments.length ? firstCard.installments[0] : null;
-
         this.state = useState({
             cardId: firstCard ? firstCard.id : false,
             installmentId: firstInstallment ? firstInstallment.id : false,
             netAmount: this._round(this.props.netAmount || 0),
         });
+    }
+
+    _round(value) {
+        return Math.round((Number(value) || 0) * 100) / 100;
     }
 
     get cards() {
@@ -42,25 +44,20 @@ export class CardInstallmentPopup extends Component {
         return this.installments.find((inst) => inst.id === this.state.installmentId) || null;
     }
 
-    get surchargeCoefficient() {
+    get coefficient() {
         return this.selectedInstallment?.surcharge_coefficient || 1.0;
     }
 
     get totalAmount() {
-        return this._round((this.state.netAmount || 0) * this.surchargeCoefficient);
+        return this._round((this.state.netAmount || 0) * this.coefficient);
     }
 
     get surchargeAmount() {
         return this._round(this.totalAmount - (this.state.netAmount || 0));
     }
 
-    _round(value) {
-        return Math.round((Number(value) || 0) * 100) / 100;
-    }
-
     onCardChange(ev) {
-        const cardId = Number(ev.target.value || 0) || false;
-        this.state.cardId = cardId;
+        this.state.cardId = Number(ev.target.value || 0) || false;
         const firstInstallment = this.installments.length ? this.installments[0] : false;
         this.state.installmentId = firstInstallment ? firstInstallment.id : false;
     }
