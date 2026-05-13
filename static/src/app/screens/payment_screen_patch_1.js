@@ -8,41 +8,18 @@ import { makeAwaitable } from "@point_of_sale/app/utils/make_awaitable_dialog";
 import { CardInstallmentPopup } from "@pos_card_installment/app/popups/card_installment_popup";
 
 function setPaymentAmount(line, amount) {
-    const value = Number(amount || 0);
     if (typeof line?.setAmount === "function") {
-        line.setAmount(value);
+        line.setAmount(amount);
     } else if (typeof line?.set_amount === "function") {
-        line.set_amount(value);
+        line.set_amount(amount);
     } else {
-        line.amount = value;
+        line.amount = amount;
     }
 }
 
 function getOrderDue(order) {
     if (typeof order?.remainingDue !== "undefined") {
         return Number(order.remainingDue || 0);
-    }
-    if (typeof order?.getDue === "function") {
-        return Number(order.getDue() || 0);
-    }
-    if (typeof order?.get_due === "function") {
-        return Number(order.get_due() || 0);
-    }
-    return 0;
-}
-
-function getOrderTotal(order) {
-    if (typeof order?.get_total_with_tax === "function") {
-        return Number(order.get_total_with_tax() || 0);
-    }
-    if (typeof order?.getTotalWithTax === "function") {
-        return Number(order.getTotalWithTax() || 0);
-    }
-    if (typeof order?.total_with_tax !== "undefined") {
-        return Number(order.total_with_tax || 0);
-    }
-    if (typeof order?.totalDue !== "undefined") {
-        return Number(order.totalDue || 0);
     }
     return 0;
 }
@@ -74,6 +51,62 @@ function normalizePopupPayload(result) {
         return result;
     }
     return null;
+}
+
+function getSurchargeProductId(pos) {
+    const configRecords = pos?.models?.["pos.config"]?.getAll?.() || [];
+
+    const candidates = [
+        pos?.config?.pci_surcharge_product_id,
+        pos?.config?.data?.pci_surcharge_product_id,
+        configRecords[0]?.pci_surcharge_product_id,
+        configRecords[0]?.data?.pci_surcharge_product_id,
+    ];
+    
+    console.log("PCI surcharge config candidates", candidates);
+
+    const value = candidates.find((v) => v !== undefined && v !== null && v !== false);
+
+    if (!value) {
+        return null;
+    }
+    if (Array.isArray(value)) {
+        return value[0] || null;
+    }
+    if (typeof value === "number") {
+        return value;
+    }
+    if (typeof value === "object" && value.id) {
+        return value.id;
+    }
+    return null;
+}
+
+
+
+function getSurchargeProduct(pos) {
+    const productId = getSurchargeProductId(pos);
+
+    console.log("PCI surcharge productId", productId);
+
+    if (!productId) {
+        return null;
+    }
+
+    let product = null;
+
+    if (pos?.models?.["product.product"]?.getBy) {
+        product = pos.models["product.product"].getBy("id", productId);
+    }
+    if (!product && pos?.models?.["product.product"]?.getAll) {
+        product = pos.models["product.product"].getAll().find((p) => p.id === productId) || null;
+    }
+    if (!product && pos?.db?.get_product_by_id) {
+        product = pos.db.get_product_by_id(productId);
+    }
+
+    console.log("PCI surcharge product found", product);
+    return product;
 }
 
 function getOrderLines(order) {
@@ -110,20 +143,20 @@ function findSurchargeLine(order, productId) {
 }
 
 function setOrderlinePrice(line, amount) {
-    const value = Number(amount || 0);
     if (!line) {
         return;
     }
+
     if (typeof line.set_unit_price === "function") {
-        line.set_unit_price(value);
+        line.set_unit_price(amount);
         return;
     }
     if (typeof line.setUnitPrice === "function") {
-        line.setUnitPrice(value);
+        line.setUnitPrice(amount);
         return;
     }
     if (typeof line.price_unit !== "undefined") {
-        line.price_unit = value;
+        line.price_unit = amount;
     }
 }
 
@@ -131,6 +164,7 @@ function setOrderlineQty(line, qty) {
     if (!line) {
         return;
     }
+
     if (typeof line.set_quantity === "function") {
         line.set_quantity(qty, true);
         return;
@@ -144,106 +178,44 @@ function setOrderlineQty(line, qty) {
     }
 }
 
-function getTotalFinancingSurcharge(order) {
-    const payments = order?.payment_ids || [];
-    return payments.reduce((total, payment) => {
-        return total + Number(payment.financing_surcharge || 0);
-    }, 0);
-}
-
-async function getCachedSurchargeProduct(screen) {
-    if (screen.pos.pci_surcharge_product_cache) {
-        return screen.pos.pci_surcharge_product_cache;
-    }
-
-    const orm = screen.env.services.orm;
-    const configId = screen.pos?.config?.id;
-
-    if (!orm || !configId) {
+async function addProductToOrder(screen, product, price) {
+    const order = screen.currentOrder;
+    if (!order) {
         return null;
     }
 
-    const configData = await orm.read(
-        "pos.config",
-        [configId],
-        ["pci_surcharge_product_id"]
-    );
-
-    const raw = configData?.[0]?.pci_surcharge_product_id;
-    console.log("PCI surcharge config via RPC", raw);
-
-    let productId = null;
-    if (Array.isArray(raw)) {
-        productId = raw[0] || null;
-    } else if (typeof raw === "number") {
-        productId = raw;
-    } else if (raw && typeof raw === "object" && raw.id) {
-        productId = raw.id;
+    if (typeof screen.pos?.addLineToCurrentOrder === "function") {
+        const line = await screen.pos.addLineToCurrentOrder(
+            {
+                product_id: product,
+                product_tmpl_id: product.product_tmpl_id,
+                qty: 1,
+                price_unit: price,
+            },
+            {},
+            false
+        );
+        return line;
     }
 
-    if (!productId) {
-        return null;
-    }
-
-    const products = await orm.read(
-        "product.product",
-        [productId],
-        ["id", "display_name", "product_tmpl_id", "available_in_pos", "sale_ok"]
-    );
-
-    const product = products?.[0] || null;
-    console.log("PCI surcharge product via RPC", product);
-
-    if (product) {
-        screen.pos.pci_surcharge_product_cache = product;
-    }
-
-    return product;
-}
-
-async function addProductToOrder(screen, productData, price) {
-    const pos = screen.pos;
-
-    if (!productData?.id) {
-        return null;
-    }
-
-    // 🔥 buscar en catálogo POS
-    let product =
-        pos.models?.["product.product"]?.getBy?.("id", productData.id) ||
-        pos.models?.["product.product"]?.getAll?.().find((p) => p.id === productData.id) ||
-        pos.db?.get_product_by_id?.(productData.id) ||
-        null;
-
-    if (!product) {
-        console.error("PCI ERROR: producto no está en el POS", productData);
-
-        screen.dialog.add(AlertDialog, {
-            title: "Producto no disponible",
-            body: "El producto de recargo no está cargado en el POS.",
+    if (typeof order.add_product === "function") {
+        order.add_product(product, {
+            quantity: 1,
+            price: price,
+            merge: false,
         });
-
-        return null;
+        const lines = getOrderLines(order);
+        return lines.length ? lines[lines.length - 1] : null;
     }
 
-    // 🔥 método correcto en Odoo 19
-    const line = await pos.addLineToCurrentOrder(
-        {
-            product_id: product,
-            qty: 1,
-            price_unit: Number(price || 0),
-        },
-        {},
-        false
-    );
-
-    return line;
+    return null;
 }
 
 async function upsertSurchargeLine(screen, order, surchargeAmount) {
-    const product = await getCachedSurchargeProduct(screen);
+    const productId = getSurchargeProductId(screen.pos);
+    const product = getSurchargeProduct(screen.pos);
 
-    if (!product?.id) {
+    if (!productId) {
         screen.dialog.add(AlertDialog, {
             title: _t("Falta configuración"),
             body: _t(
@@ -253,7 +225,22 @@ async function upsertSurchargeLine(screen, order, surchargeAmount) {
         return null;
     }
 
-    let line = findSurchargeLine(order, product.id);
+    if (!product) {
+        console.warn("PCI surcharge product missing in frontend catalog", {
+            config_value: screen.pos?.config?.pci_surcharge_product_id,
+            productId,
+        });
+    
+        screen.dialog.add(AlertDialog, {
+            title: _t("Producto no cargado en POS"),
+            body: _t(
+                "El producto de recargo está configurado correctamente, pero el POS no lo encontró en su catálogo cargado. Verifica que el producto esté activo, marcado como disponible en POS y visible en esta sesión."
+            ),
+        });
+        return null;
+    }
+
+    let line = findSurchargeLine(order, productId);
 
     if (surchargeAmount > 0) {
         if (line) {
@@ -275,8 +262,6 @@ async function upsertSurchargeLine(screen, order, surchargeAmount) {
 }
 
 patch(PaymentScreen.prototype, {
-
-
     async addNewPaymentLine(paymentMethod) {
         const result = await super.addNewPaymentLine(...arguments);
 
@@ -288,8 +273,6 @@ patch(PaymentScreen.prototype, {
             const cards = paymentMethod.pci_card_data
                 ? JSON.parse(paymentMethod.pci_card_data)
                 : [];
-
-            console.log("PCI parsed cards", cards);
 
             if (!cards.length) {
                 return result;
@@ -312,21 +295,13 @@ patch(PaymentScreen.prototype, {
             const due = getOrderDue(order);
             const netAmount = currentLineAmount > 0 ? currentLineAmount : due;
 
-            console.log("PCI order.payment_ids", order.payment_ids);
-            console.log("PCI selected/fallback line", paymentLine);
-            console.log("PCI netAmount used", { currentLineAmount, due, netAmount });
-
             const popupResult = await makeAwaitable(this.dialog, CardInstallmentPopup, {
                 title: "Tarjeta / Cuotas",
                 paymentMethod,
                 netAmount,
             });
 
-            console.log("PCI popupResult raw", popupResult);
-
             const payload = normalizePopupPayload(popupResult);
-
-            console.log("PCI popup payload normalized", payload);
 
             if (!payload || !payload.card_id || !payload.installment_id) {
                 if (typeof order.selectPaymentline === "function") {
@@ -343,72 +318,56 @@ patch(PaymentScreen.prototype, {
                 surcharge_amount,
                 total_amount,
             } = payload;
-
-            //await upsertSurchargeLine(this, order, Number(surcharge_amount || 0));
-
+            
+            await upsertSurchargeLine(this, order, Number(surcharge_amount || 0));
+            
             let activePaymentLine = this.selectedPaymentLine || order.getSelectedPaymentline();
+            
             if (!activePaymentLine && order.payment_ids?.length) {
                 activePaymentLine = order.payment_ids.at(-1);
             }
-
+            
             if (!activePaymentLine) {
                 console.warn("PCI: no se encontró payment line después de agregar recargo");
                 this.render(true);
                 return result;
             }
-
-            //const newTotal = getOrderTotal(order);
-
-            //setPaymentAmount(activePaymentLine, newTotal);
-            //const paymentTotal = Number(total_amount || 0);
             
-            //setPaymentAmount(activePaymentLine, paymentTotal);
-
-            // 🔥 GUARDAR DATOS EN LA PAYMENT LINE
+            const newTotal =
+                typeof order.get_total_with_tax === "function"
+                    ? Number(order.get_total_with_tax() || 0)
+                    : Number(total_amount || 0);
+            
+            setPaymentAmount(activePaymentLine, newTotal);
+            
             activePaymentLine.card_id = card_id;
             activePaymentLine.installment_id = installment_id;
             activePaymentLine.net_amount = Number(net_amount || 0);
             activePaymentLine.financing_surcharge = Number(surcharge_amount || 0);
             activePaymentLine.total_amount = Number(total_amount || 0);
 
-
-            // 🔥 RECALCULAR RECARGO TOTAL
-            const totalSurcharge = getTotalFinancingSurcharge(order);
-            
-            // 🔥 ACTUALIZAR / CREAR LÍNEA DE RECARGO
-            await upsertSurchargeLine(this, order, totalSurcharge);
-            
-            // 🔥 EL PAGO SOLO DEBE SER neto + recargo DE ESA LÍNEA
-            const paymentTotal = Number(total_amount || 0);
-            
-            setPaymentAmount(activePaymentLine, paymentTotal);
-            
             console.log("PCI payment line FINAL", {
-                amount: typeof activePaymentLine.getAmount === "function"
-                    ? activePaymentLine.getAmount()
-                    : activePaymentLine.amount,
                 card_id: activePaymentLine.card_id,
                 installment_id: activePaymentLine.installment_id,
                 net_amount: activePaymentLine.net_amount,
                 financing_surcharge: activePaymentLine.financing_surcharge,
                 total_amount: activePaymentLine.total_amount,
             });
-
+            
             if (typeof order.selectPaymentline === "function") {
                 order.selectPaymentline(activePaymentLine);
             }
-
+            
             if (this.numberBuffer && typeof this.numberBuffer.reset === "function") {
                 this.numberBuffer.reset();
             }
             if (this.numberBuffer && typeof this.numberBuffer.set === "function") {
-                //this.numberBuffer.set(String(newTotal));
-                this.numberBuffer.set(String(paymentTotal));
+                this.numberBuffer.set(String(newTotal));
             }
-
+            
             console.log("PCI payment line final amount", newTotal);
             console.log("PCI activePaymentLine", activePaymentLine);
-
+            
             this.render(true);
             return result;
         } catch (error) {

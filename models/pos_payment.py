@@ -1,4 +1,4 @@
-from odoo import api, fields, models
+from odoo import fields, models
 
 
 class PosPayment(models.Model):
@@ -7,11 +7,9 @@ class PosPayment(models.Model):
     card_id = fields.Many2one("account.card", string="Tarjeta")
     installment_id = fields.Many2one("account.card.installment", string="Plan de cuotas")
     net_amount = fields.Monetary(string="Monto neto")
-    financing_surcharge = fields.Monetary(
-        string="Recargo financiero",
-        compute="_compute_financing_surcharge",
-        store=True,
-    )
+    financing_surcharge = fields.Monetary(string="Recargo financiero")
+    pci_surcharge_amount = fields.Monetary(string="Recargo financiero PCI")
+    total_amount = fields.Monetary(string="Monto total")
     pci_debit_note_move_id = fields.Many2one(
         "account.move",
         string="Nota de débito generada",
@@ -19,8 +17,8 @@ class PosPayment(models.Model):
         copy=False,
     )
 
-    @api.depends("amount", "net_amount")
-    def _compute_financing_surcharge(self):
-        for rec in self:
-            net = rec.net_amount or 0.0
-            rec.financing_surcharge = (rec.amount or 0.0) - net
+    currency_id = fields.Many2one(
+        related="pos_order_id.currency_id",
+        store=True,
+        readonly=True,
+    )

@@ -11,81 +11,116 @@ export class CardInstallmentPopup extends Component {
         title: { type: String, optional: true },
         paymentMethod: Object,
         netAmount: Number,
+        getPayload: { type: Function, optional: true },
     };
 
     setup() {
-        const cards = this.props.paymentMethod.pci_card_data || [];
+        let cards = [];
+        try {
+            const raw = this.props.paymentMethod?.pci_card_data;
+            if (Array.isArray(raw)) {
+                cards = raw;
+            } else if (typeof raw === "string" && raw.trim()) {
+                cards = JSON.parse(raw);
+            }
+        } catch (error) {
+            console.error("PCI popup parse error", error);
+        }
+
+        console.log("PCI POPUP cards", cards);
+
         const firstCard = cards.length ? cards[0] : null;
-        const firstInstallment = firstCard && firstCard.installments.length ? firstCard.installments[0] : null;
+        const firstInstallments = firstCard?.installments || [];
+        const firstInstallment = firstInstallments.length ? firstInstallments[0] : null;
+        const netAmount = Number(this.props.netAmount || 0);
+        const coefficient = Number(firstInstallment?.surcharge_coefficient || 1);
+        const total = netAmount * coefficient;
+        const surcharge = total - netAmount;
+
         this.state = useState({
-            cardId: firstCard ? firstCard.id : false,
-            installmentId: firstInstallment ? firstInstallment.id : false,
-            netAmount: this._round(this.props.netAmount || 0),
+            cards,
+            selectedCardId: firstCard?.id || null,
+            installments: firstInstallments,
+            selectedInstallmentId: firstInstallment?.id || null,
+            netAmount,
+            coefficient,
+            surcharge,
+            total,
         });
-    }
-
-    _round(value) {
-        return Math.round((Number(value) || 0) * 100) / 100;
-    }
-
-    get cards() {
-        return this.props.paymentMethod.pci_card_data || [];
-    }
-
-    get selectedCard() {
-        return this.cards.find((card) => card.id === this.state.cardId) || null;
-    }
-
-    get installments() {
-        return this.selectedCard ? (this.selectedCard.installments || []) : [];
     }
 
     get selectedInstallment() {
-        return this.installments.find((inst) => inst.id === this.state.installmentId) || null;
+        return (
+            this.state.installments.find(
+                (i) => i.id === this.state.selectedInstallmentId
+            ) || null
+        );
     }
 
-    get coefficient() {
-        return this.selectedInstallment?.surcharge_coefficient || 1.0;
+    onChangeCard(ev) {
+        const cardId = parseInt(ev.target.value, 10) || null;
+        const card = this.state.cards.find((c) => c.id === cardId) || null;
+        const installments = card?.installments || [];
+        const firstInstallment = installments.length ? installments[0] : null;
+
+        this.state.selectedCardId = cardId;
+        this.state.installments = installments;
+        this.state.selectedInstallmentId = firstInstallment?.id || null;
+
+        this.recomputeAmounts();
     }
 
-    get totalAmount() {
-        return this._round((this.state.netAmount || 0) * this.coefficient);
+    onChangeInstallment(ev) {
+        this.state.selectedInstallmentId = parseInt(ev.target.value, 10) || null;
+        this.recomputeAmounts();
     }
 
-    get surchargeAmount() {
-        return this._round(this.totalAmount - (this.state.netAmount || 0));
+    onChangeNetAmount(ev) {
+        const value = parseFloat(ev.target.value || 0);
+        this.state.netAmount = isNaN(value) ? 0 : value;
+        this.recomputeAmounts();
     }
 
-    onCardChange(ev) {
-        this.state.cardId = Number(ev.target.value || 0) || false;
-        const firstInstallment = this.installments.length ? this.installments[0] : false;
-        this.state.installmentId = firstInstallment ? firstInstallment.id : false;
+    recomputeAmounts() {
+        const installment = this.selectedInstallment;
+        const coefficient = Number(installment?.surcharge_coefficient || 1);
+        const net = Number(this.state.netAmount || 0);
+        const total = net * coefficient;
+        const surcharge = total - net;
+
+        this.state.coefficient = coefficient;
+        this.state.total = total;
+        this.state.surcharge = surcharge;
     }
 
-    onInstallmentChange(ev) {
-        this.state.installmentId = Number(ev.target.value || 0) || false;
-    }
-
-    onNetAmountInput(ev) {
-        this.state.netAmount = this._round(ev.target.value);
-    }
-
-    cancel() {
-        this.props.close({ confirmed: false });
+    buildPayload() {
+        return {
+            confirmed: true,
+            card_id: this.state.selectedCardId,
+            installment_id: this.state.selectedInstallmentId,
+            net_amount: this.state.netAmount,
+            surcharge_amount: this.state.surcharge,
+            total_amount: this.state.total,
+        };
     }
 
     confirm() {
-        this.props.close({
-            confirmed: true,
-            payload: {
-                card_id: this.state.cardId || false,
-                installment_id: this.state.installmentId || false,
-                net_amount: this._round(this.state.netAmount || 0),
-                financing_surcharge: this.surchargeAmount,
-                total_amount: this.totalAmount,
-                card_name: this.selectedCard?.name || "",
-                installment_name: this.selectedInstallment?.name || "",
-            },
-        });
+        if (!this.state.selectedCardId || !this.state.selectedInstallmentId) {
+            return;
+        }
+
+        const payload = this.buildPayload();
+        console.log("PCI popup confirm payload", payload);
+
+        // 👇 ESTA ES LA PARTE CLAVE
+        if (typeof this.props.getPayload === "function") {
+            this.props.getPayload(payload);
+        }
+
+        this.props.close();
+    }
+
+    cancel() {
+        this.props.close();
     }
 }

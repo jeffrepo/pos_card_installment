@@ -1,66 +1,107 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <templates id="template" xml:space="preserve">
+
     <t t-name="pos_card_installment.CardInstallmentPopup">
-        <Dialog title="props.title || 'Tarjeta y cuotas'" size="'md'">
+        <Dialog title="props.title || 'Tarjeta / Cuotas'">
             <div class="p-3">
                 <div class="mb-3">
                     <label class="form-label">Método de pago</label>
-                    <input class="form-control" t-att-value="props.paymentMethod.name" readonly="readonly"/>
+                    <input
+                        class="form-control"
+                        t-att-value="props.paymentMethod?.name || ''"
+                        readonly="readonly"
+                    />
                 </div>
 
-                <div class="row g-3">
-                    <div class="col-12 col-md-6">
+                <div class="row">
+                    <div class="col-6 mb-3">
                         <label class="form-label">Tarjeta</label>
-                        <select class="form-select" t-on-change="onCardChange">
-                            <option t-if="!cards.length" value="">Sin tarjetas configuradas</option>
-                            <t t-foreach="cards" t-as="card" t-key="card.id">
-                                <option t-att-value="card.id" t-att-selected="card.id === state.cardId ? true : undefined">
-                                    <t t-esc="card.name"/>
-                                </option>
+                        <select class="form-select" t-on-change="onChangeCard">
+                            <t t-if="state.cards.length">
+                                <t t-foreach="state.cards" t-as="card" t-key="card.id">
+                                    <option
+                                        t-att-value="card.id"
+                                        t-att-selected="card.id === state.selectedCardId ? true : undefined"
+                                    >
+                                        <t t-esc="card.name"/>
+                                    </option>
+                                </t>
+                            </t>
+                            <t t-else="">
+                                <option value="">Sin tarjetas configuradas</option>
                             </t>
                         </select>
                     </div>
 
-                    <div class="col-12 col-md-6">
+                    <div class="col-6 mb-3">
                         <label class="form-label">Cuotas</label>
-                        <select class="form-select" t-on-change="onInstallmentChange">
-                            <option t-if="!installments.length" value="">Sin planes configurados</option>
-                            <t t-foreach="installments" t-as="inst" t-key="inst.id">
-                                <option t-att-value="inst.id" t-att-selected="inst.id === state.installmentId ? true : undefined">
-                                    <t t-esc="inst.name"/>
-                                </option>
+                        <select class="form-select" t-on-change="onChangeInstallment">
+                            <t t-if="state.installments.length">
+                                <t t-foreach="state.installments" t-as="installment" t-key="installment.id">
+                                    <option
+                                        t-att-value="installment.id"
+                                        t-att-selected="installment.id === state.selectedInstallmentId ? true : undefined"
+                                    >
+                                        <t t-esc="installment.name"/>
+                                    </option>
+                                </t>
+                            </t>
+                            <t t-else="">
+                                <option value="">Sin planes configurados</option>
                             </t>
                         </select>
                     </div>
+                </div>
 
-                    <div class="col-12">
-                        <label class="form-label">Monto neto</label>
-                        <input type="number" step="0.01" class="form-control" t-att-value="state.netAmount" t-on-input="onNetAmountInput"/>
-                    </div>
+                <div class="mb-3">
+                    <label class="form-label">Monto neto</label>
+                    <input
+                        type="number"
+                        class="form-control"
+                        t-att-value="state.netAmount"
+                        t-on-input="onChangeNetAmount"
+                    />
+                </div>
 
-                    <div class="col-12 col-md-4">
+                <div class="row">
+                    <div class="col-4 mb-3">
                         <label class="form-label">Coeficiente</label>
-                        <input class="form-control" t-att-value="coefficient" readonly="readonly"/>
+                        <input
+                            class="form-control"
+                            t-att-value="state.coefficient"
+                            readonly="readonly"
+                        />
                     </div>
-                    <div class="col-12 col-md-4">
+                    <div class="col-4 mb-3">
                         <label class="form-label">Recargo</label>
-                        <input class="form-control" t-att-value="surchargeAmount" readonly="readonly"/>
+                        <input
+                            class="form-control"
+                            t-att-value="state.surcharge.toFixed(2)"
+                            readonly="readonly"
+                        />
                     </div>
-                    <div class="col-12 col-md-4">
+                    <div class="col-4 mb-3">
                         <label class="form-label">Importe total</label>
-                        <input class="form-control" t-att-value="totalAmount" readonly="readonly"/>
+                        <input
+                            class="form-control"
+                            t-att-value="state.total.toFixed(2)"
+                            readonly="readonly"
+                        />
                     </div>
                 </div>
             </div>
 
             <t t-set-slot="footer">
                 <button class="btn btn-secondary" t-on-click="cancel">Cancelar</button>
-                <button class="btn btn-primary"
-                        t-att-disabled="!state.cardId || !state.installmentId || !(state.netAmount > 0)"
-                        t-on-click="confirm">
+                <button
+                    class="btn btn-primary"
+                    t-on-click="confirm"
+                    t-att-disabled="(!state.selectedCardId || !state.selectedInstallmentId) ? true : undefined"
+                >
                     Confirmar
                 </button>
             </t>
         </Dialog>
     </t>
+
 </templates>

@@ -3,7 +3,7 @@
     "version": "19.0.1.0.1",
     "summary": "Card/installment selection in POS reusing existing payment surcharge logic",
     "category": "Point of Sale",
-    "author": "Silva",
+    "author": "Silva Technologies",
     "license": "LGPL-3",
     "depends": [
         "point_of_sale",
@@ -11,7 +11,8 @@
         "account_payment_financial_surcharge"
     ],
     "data": [
-        #"views/pos_payment_method_views.xml",
+        "views/pos_payment_method_views.xml",
+        "views/pos_config_views.xml",
         #"views/pos_payment_views.xml"
     ],
     "assets": {
