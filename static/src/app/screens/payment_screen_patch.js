@@ -7,8 +7,12 @@ import { PaymentScreen } from "@point_of_sale/app/screens/payment_screen/payment
 import { makeAwaitable } from "@point_of_sale/app/utils/make_awaitable_dialog";
 import { CardInstallmentPopup } from "@pos_card_installment/app/popups/card_installment_popup";
 
+function ceilMoney(value) {
+    return Math.ceil(Number(value || 0));
+}
+
 function setPaymentAmount(line, amount) {
-    const value = Number(amount || 0);
+    const value = ceilMoney(amount);
     if (typeof line?.setAmount === "function") {
         line.setAmount(value);
     } else if (typeof line?.set_amount === "function") {
@@ -110,20 +114,23 @@ function findSurchargeLine(order, productId) {
 }
 
 function setOrderlinePrice(line, amount) {
-    const value = Number(amount || 0);
+    const value = ceilMoney(amount);
     if (!line) {
         return;
     }
     if (typeof line.set_unit_price === "function") {
         line.set_unit_price(value);
+        console.log("PCI setOrderlinePrice via set_unit_price:", value, "-> price_unit after:", line.price_unit);
         return;
     }
     if (typeof line.setUnitPrice === "function") {
         line.setUnitPrice(value);
+        console.log("PCI setOrderlinePrice via setUnitPrice:", value, "-> price_unit after:", line.price_unit);
         return;
     }
     if (typeof line.price_unit !== "undefined") {
         line.price_unit = value;
+        console.log("PCI setOrderlinePrice direct:", value, "-> price_unit after:", line.price_unit);
     }
 }
 
@@ -147,7 +154,7 @@ function setOrderlineQty(line, qty) {
 function getTotalFinancingSurcharge(order) {
     const payments = order?.payment_ids || [];
     return payments.reduce((total, payment) => {
-        return total + Number(payment.financing_surcharge || 0);
+        return total + ceilMoney(payment.financing_surcharge || 0);
     }, 0);
 }
 
@@ -231,13 +238,45 @@ async function addProductToOrder(screen, productData, price) {
         {
             product_id: product,
             qty: 1,
-            price_unit: Number(price || 0),
+            price_unit: ceilMoney(price),
         },
         {},
         false
     );
 
+    console.log("PCI addProductToOrder price_unit stored:", line?.price_unit);
     return line;
+}
+
+function _pciSetTaxPriceInclude(line, include) {
+    // Marcar los taxes de la línea como price_include para que Odoo
+    // no sume IVA encima del precio ya seteado (que ya incluye IVA)
+    try {
+        const taxes = line.tax_ids || line.taxes_id || [];
+        const taxArray = Array.isArray(taxes) ? taxes : (taxes.models || []);
+        for (const tax of taxArray) {
+            if (typeof tax === "object" && tax !== null) {
+                tax.price_include = include;
+                // Odoo 17+ usa is_base_affected
+                if ("is_base_affected" in tax) {
+                    tax.is_base_affected = !include;
+                }
+            }
+        }
+        // Forzar recalculo
+        if (typeof line.computeAll === "function") {
+            line.computeAll();
+        } else if (typeof line.compute_all === "function") {
+            line.compute_all();
+        } else if (typeof line.updateTax === "function") {
+            line.updateTax();
+        } else if (typeof line.set_unit_price === "function") {
+            line.set_unit_price(line.price_unit);
+        }
+        console.log("PCI _pciSetTaxPriceInclude: tax price_include =", include, "price_unit:", line.price_unit);
+    } catch(e) {
+        console.warn("PCI _pciSetTaxPriceInclude error:", e);
+    }
 }
 
 async function upsertSurchargeLine(screen, order, surchargeAmount) {
@@ -256,11 +295,22 @@ async function upsertSurchargeLine(screen, order, surchargeAmount) {
     let line = findSurchargeLine(order, product.id);
 
     if (surchargeAmount > 0) {
+        // La moneda (ARS) tiene rounding=1, entonces Odoo redondea price_unit a entero.
+        // No podemos usar decimales en price_unit. Estrategia: marcar los taxes de la
+        // línea como price_include=true DESPUÉS de crearla, y pasar el monto bruto
+        // redondeado como price_unit. Así Odoo no suma IVA encima.
+        const surchargeRounded = ceilMoney(surchargeAmount);
+        console.log("PCI upsertSurchargeLine surchargeAmount:", surchargeAmount, "surchargeRounded:", surchargeRounded);
+
         if (line) {
-            setOrderlinePrice(line, surchargeAmount);
+            setOrderlinePrice(line, surchargeRounded);
             setOrderlineQty(line, 1);
+            _pciSetTaxPriceInclude(line, true);
         } else {
-            line = await addProductToOrder(screen, product, surchargeAmount);
+            line = await addProductToOrder(screen, product, surchargeRounded);
+            if (line) {
+                _pciSetTaxPriceInclude(line, true);
+            }
         }
     } else if (line) {
         if (typeof order.removeOrderline === "function") {
@@ -310,7 +360,7 @@ patch(PaymentScreen.prototype, {
 
             const currentLineAmount = getLineAmount(paymentLine);
             const due = getOrderDue(order);
-            const netAmount = currentLineAmount > 0 ? currentLineAmount : due;
+            const netAmount = ceilMoney(currentLineAmount > 0 ? currentLineAmount : due);
 
             console.log("PCI order.payment_ids", order.payment_ids);
             console.log("PCI selected/fallback line", paymentLine);
@@ -357,42 +407,32 @@ patch(PaymentScreen.prototype, {
                 return result;
             }
 
-            //const newTotal = getOrderTotal(order);
-
-            //setPaymentAmount(activePaymentLine, newTotal);
-            //const paymentTotal = Number(total_amount || 0);
-            
-            //setPaymentAmount(activePaymentLine, paymentTotal);
-
             // 🔥 GUARDAR DATOS EN LA PAYMENT LINE
             activePaymentLine.card_id = card_id;
             activePaymentLine.installment_id = installment_id;
-            activePaymentLine.net_amount = Number(net_amount || 0);
-            activePaymentLine.financing_surcharge = Number(surcharge_amount || 0);
-            activePaymentLine.total_amount = Number(total_amount || 0);
+            const roundedNet = ceilMoney(net_amount);
+            const roundedTotal = ceilMoney(total_amount);
+            const roundedSurcharge = ceilMoney(roundedTotal - roundedNet);
 
+            activePaymentLine.net_amount = roundedNet;
+            activePaymentLine.financing_surcharge = roundedSurcharge;
+            activePaymentLine.total_amount = roundedTotal;
 
-            // 🔥 RECALCULAR RECARGO TOTAL
+            // 🔥 RECALCULAR RECARGO TOTAL Y AGREGAR LÍNEA
             const totalSurcharge = getTotalFinancingSurcharge(order);
-            
-            // 🔥 ACTUALIZAR / CREAR LÍNEA DE RECARGO
             await upsertSurchargeLine(this, order, totalSurcharge);
-            
-            // 🔥 EL PAGO SOLO DEBE SER neto + recargo DE ESA LÍNEA
-            const paymentTotal = Number(total_amount || 0);
-            
+
+            // Esperar que OWL termine de recalcular el pedido tras agregar la línea de recargo
+            await new Promise(resolve => setTimeout(resolve, 50));
+
+            // Setear el monto con el total_amount del popup (verdad final)
+            const paymentTotal = roundedTotal;
+            console.log("PCI total_amount popup:", total_amount, "paymentTotal rounded up:", paymentTotal);
             setPaymentAmount(activePaymentLine, paymentTotal);
-            
-            console.log("PCI payment line FINAL", {
-                amount: typeof activePaymentLine.getAmount === "function"
-                    ? activePaymentLine.getAmount()
-                    : activePaymentLine.amount,
-                card_id: activePaymentLine.card_id,
-                installment_id: activePaymentLine.installment_id,
-                net_amount: activePaymentLine.net_amount,
-                financing_surcharge: activePaymentLine.financing_surcharge,
-                total_amount: activePaymentLine.total_amount,
-            });
+
+            // Segundo set tras otro tick para cubrir cualquier reactividad de OWL
+            await new Promise(resolve => setTimeout(resolve, 50));
+            setPaymentAmount(activePaymentLine, paymentTotal);
 
             if (typeof order.selectPaymentline === "function") {
                 order.selectPaymentline(activePaymentLine);
@@ -402,13 +442,18 @@ patch(PaymentScreen.prototype, {
                 this.numberBuffer.reset();
             }
             if (this.numberBuffer && typeof this.numberBuffer.set === "function") {
-                //this.numberBuffer.set(String(newTotal));
                 this.numberBuffer.set(String(paymentTotal));
             }
 
-            console.log("PCI payment line final amount", newTotal);
-            console.log("PCI activePaymentLine", activePaymentLine);
-
+            console.log("PCI payment line FINAL", {
+                paymentTotal,
+                card_id: activePaymentLine.card_id,
+                installment_id: activePaymentLine.installment_id,
+                net_amount: activePaymentLine.net_amount,
+                financing_surcharge: activePaymentLine.financing_surcharge,
+                total_amount: activePaymentLine.total_amount,
+            });
+            
             this.render(true);
             return result;
         } catch (error) {

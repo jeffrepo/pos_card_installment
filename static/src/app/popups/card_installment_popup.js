@@ -3,6 +3,10 @@
 import { Component, useState } from "@odoo/owl";
 import { Dialog } from "@web/core/dialog/dialog";
 
+function ceilMoney(value) {
+    return Math.ceil(Number(value || 0));
+}
+
 export class CardInstallmentPopup extends Component {
     static template = "pos_card_installment.CardInstallmentPopup";
     static components = { Dialog };
@@ -32,10 +36,10 @@ export class CardInstallmentPopup extends Component {
         const firstCard = cards.length ? cards[0] : null;
         const firstInstallments = firstCard?.installments || [];
         const firstInstallment = firstInstallments.length ? firstInstallments[0] : null;
-        const netAmount = Number(this.props.netAmount || 0);
+        const netAmount = ceilMoney(this.props.netAmount || 0);
         const coefficient = Number(firstInstallment?.surcharge_coefficient || 1);
-        const total = netAmount * coefficient;
-        const surcharge = total - netAmount;
+        const total = ceilMoney(netAmount * coefficient);
+        const surcharge = ceilMoney(total - netAmount);
 
         this.state = useState({
             cards,
@@ -77,30 +81,35 @@ export class CardInstallmentPopup extends Component {
 
     onChangeNetAmount(ev) {
         const value = parseFloat(ev.target.value || 0);
-        this.state.netAmount = isNaN(value) ? 0 : value;
+        this.state.netAmount = isNaN(value) ? 0 : ceilMoney(value);
         this.recomputeAmounts();
     }
 
     recomputeAmounts() {
         const installment = this.selectedInstallment;
         const coefficient = Number(installment?.surcharge_coefficient || 1);
-        const net = Number(this.state.netAmount || 0);
-        const total = net * coefficient;
-        const surcharge = total - net;
+        const net = ceilMoney(this.state.netAmount || 0);
+        const total = ceilMoney(net * coefficient);
+        const surcharge = ceilMoney(total - net);
 
+        this.state.netAmount = net;
         this.state.coefficient = coefficient;
         this.state.total = total;
         this.state.surcharge = surcharge;
     }
 
     buildPayload() {
+        const net = ceilMoney(this.state.netAmount);
+        const total = ceilMoney(this.state.total);
+        const surcharge = ceilMoney(total - net);
+
         return {
             confirmed: true,
             card_id: this.state.selectedCardId,
             installment_id: this.state.selectedInstallmentId,
-            net_amount: this.state.netAmount,
-            surcharge_amount: this.state.surcharge,
-            total_amount: this.state.total,
+            net_amount: net,
+            surcharge_amount: surcharge,
+            total_amount: total,
         };
     }
 
