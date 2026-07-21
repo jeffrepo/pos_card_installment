@@ -1,6 +1,6 @@
 import json
 from odoo import api, fields, models
-
+import logging
 
 class PosPaymentMethod(models.Model):
     _inherit = "pos.payment.method"
@@ -42,6 +42,8 @@ class PosPaymentMethod(models.Model):
     )
     def _compute_pci_card_data(self):
         for rec in self:
+            logging.warning("_compute_pci_card_data")
+            logging.warning(rec.pci_card_data)
             rec.pci_card_data = json.dumps(rec._pci_build_card_payload())
 
     def _pci_build_card_payload(self):
@@ -86,4 +88,6 @@ class PosPaymentMethod(models.Model):
             rec = record_map.get(vals.get("id"))
             if rec:
                 vals["pci_card_data"] = json.dumps(rec._pci_build_card_payload())
+        logging.warning("data")
+        logging.warning(data)
         return data
