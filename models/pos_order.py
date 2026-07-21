@@ -1,6 +1,6 @@
 import logging
 
-from odoo import _, models
+from odoo import _, api, models
 from odoo.exceptions import UserError
 
 _logger = logging.getLogger(__name__)
@@ -9,38 +9,94 @@ _logger = logging.getLogger(__name__)
 class PosOrder(models.Model):
     _inherit = "pos.order"
 
+    @api.model
+    def _process_order(self, order, existing_order):
+        installment_method_ids = {
+            command[2].get("payment_method_id")
+            for command in order.get("payment_ids", [])
+            if isinstance(command, (list, tuple))
+            and len(command) >= 3
+            and command[2]
+            and (
+                command[2].get("installment_id")
+                or command[2].get("pci_installment_ref_id")
+            )
+            and command[2].get("payment_method_id")
+        }
+        if installment_method_ids:
+            force_invoice = self.env["pos.payment.method"].browse(
+                installment_method_ids
+            ).filtered("pci_force_invoice")
+            if force_invoice:
+                order["to_invoice"] = True
+
+        return super()._process_order(order, existing_order)
+
+    def _has_pci_installment_payment(self):
+        self.ensure_one()
+        return any(
+            payment.installment_id or payment.pci_installment_ref_id
+            for payment in self.payment_ids
+        )
+
     def _get_pci_surcharge_line(self):
         self.ensure_one()
+        if not self._has_pci_installment_payment():
+            return self.env["pos.order.line"]
+
         product = self.config_id.pci_surcharge_product_id
         if not product:
             return self.env["pos.order.line"]
 
         return self.lines.filtered(lambda l: l.product_id.id == product.id)[:1]
 
-    def _prepare_pci_debit_note_vals_from_line(self, invoice, surcharge_line):
+    def _get_pci_rounding_line(self):
+        self.ensure_one()
+        if not self._has_pci_installment_payment():
+            return self.env["pos.order.line"]
+
+        product = self.config_id.pci_rounding_product_id
+        if not product:
+            return self.env["pos.order.line"]
+
+        return self.lines.filtered(lambda l: l.product_id.id == product.id)[:1]
+
+    def _prepare_pci_debit_note_vals_from_lines(self, invoice, financial_lines):
         self.ensure_one()
 
         partner = invoice.partner_id or self.partner_id
         if not partner:
             raise UserError(_("La orden POS debe tener cliente para generar la nota de débito automática."))
 
+        invoice_line_ids = []
+        for line in financial_lines:
+            invoice_line_ids.append((0, 0, {
+                "product_id": line.product_id.id,
+                "name": line.full_product_name or line.product_id.display_name or _("Ajuste tarjeta/cuotas"),
+                "quantity": line.qty or 1.0,
+                "price_unit": line.price_unit,
+                "discount": line.discount or 0.0,
+                "tax_ids": [(6, 0, line.tax_ids.ids)],
+            }))
+
+        installment_payment = self.payment_ids.filtered(
+            lambda payment: payment.installment_id or payment.pci_installment_ref_id
+        )[:1]
+        debit_note_journal = (
+            installment_payment.payment_method_id.pci_debit_note_journal_id
+            or invoice.journal_id
+        )
+
         vals = {
             "move_type": "out_invoice",
             "partner_id": partner.id,
-            "journal_id": invoice.journal_id.id,
+            "journal_id": debit_note_journal.id,
             "currency_id": invoice.currency_id.id,
             "invoice_date": invoice.invoice_date,
             "invoice_origin": invoice.name or self.pos_reference or self.name,
             "ref": _("Recargo financiero POS - %s", self.pos_reference or self.name),
             "invoice_payment_term_id": False,
-            "invoice_line_ids": [(0, 0, {
-                "product_id": surcharge_line.product_id.id,
-                "name": surcharge_line.full_product_name or surcharge_line.product_id.display_name or _("Recargo financiero"),
-                "quantity": surcharge_line.qty or 1.0,
-                "price_unit": surcharge_line.price_unit,
-                "discount": surcharge_line.discount or 0.0,
-                "tax_ids": [(6, 0, surcharge_line.tax_ids.ids)],
-            })],
+            "invoice_line_ids": invoice_line_ids,
         }
 
         # Reutilizar datos latam si existen en la factura original
@@ -61,9 +117,14 @@ class PosOrder(models.Model):
     def _create_pci_debit_note(self, invoice):
         self.ensure_one()
 
+        if not self._has_pci_installment_payment():
+            return self.env["account.move"]
+
         surcharge_line = self._get_pci_surcharge_line()
-        if not surcharge_line:
-            _logger.warning("PCI ND: orden %s sin línea de recargo", self.name)
+        rounding_line = self._get_pci_rounding_line()
+        financial_lines = surcharge_line | rounding_line
+        if not financial_lines:
+            _logger.warning("PCI ND: orden %s sin líneas de recargo o redondeo", self.name)
             return self.env["account.move"]
 
         # Evitar duplicados si el método se dispara más de una vez
@@ -79,23 +140,17 @@ class PosOrder(models.Model):
             return existing
 
         _logger.warning(
-            "PCI ND: creando ND desde línea de recargo. order=%s line=%s subtotal=%s subtotal_incl=%s price_unit=%s qty=%s",
+            "PCI ND: creando ND desde líneas financieras. order=%s lines=%s total_incl=%s",
             self.name,
-            surcharge_line.id,
-            surcharge_line.price_subtotal,
-            surcharge_line.price_subtotal_incl,
-            surcharge_line.price_unit,
-            surcharge_line.qty,
+            financial_lines.ids,
+            sum(financial_lines.mapped("price_subtotal_incl")),
         )
 
-        vals = self._prepare_pci_debit_note_vals_from_line(invoice, surcharge_line)
-        logging.warning("nota debito")
-        logging.warning(vals)
-        
+        vals = self._prepare_pci_debit_note_vals_from_lines(invoice, financial_lines)
         debit_note = self.env["account.move"].sudo().with_company(self.company_id).create(vals)
-        logging.warning(debit_note)
-        journal_dn = self.env["l10n_latam.document.type"].search([("code","=", 7)])
-        debit_note.write({ "l10n_latam_document_type_id": journal_dn.id,})
+        document_type = self.env["l10n_latam.document.type"].search([("code", "=", "7")], limit=1)
+        if document_type:
+            debit_note.write({"l10n_latam_document_type_id": document_type.id})
         debit_note.action_post()
 
         # Guardar referencia en los pagos de la orden
@@ -150,16 +205,22 @@ class PosOrder(models.Model):
                         "amount",
                         "card_id",
                         "installment_id",
+                        "pci_card_ref_id",
+                        "pci_installment_ref_id",
                         "net_amount",
                         "financing_surcharge",
+                        "rounding_adjustment",
                         "total_amount",
                     ]),
                 )
                 _logger.warning(
-                    "PCI DEBUG order %s surcharge lines: %s",
+                    "PCI DEBUG order %s financial lines: %s",
                     order.name,
                     order.lines.filtered(
-                        lambda l: order.config_id.pci_surcharge_product_id and l.product_id.id == order.config_id.pci_surcharge_product_id.id
+                        lambda line: line.product_id in (
+                            order.config_id.pci_surcharge_product_id
+                            | order.config_id.pci_rounding_product_id
+                        )
                     ).read([
                         "product_id",
                         "price_unit",
@@ -187,10 +248,16 @@ class PosOrder(models.Model):
         if not self:
             return invoice_lines
 
-        # Tomamos el producto de recargo configurado del primer pedido
-        # (en este flujo normalmente se factura una orden por vez)
-        surcharge_product = self[0].config_id.pci_surcharge_product_id
-        if not surcharge_product:
+        order = self[0]
+        if not order._has_pci_installment_payment():
+            return invoice_lines
+
+        financial_products = (
+            order.config_id.pci_surcharge_product_id
+            | order.config_id.pci_rounding_product_id
+        )
+        financial_product_ids = set(financial_products.ids)
+        if not financial_product_ids:
             return invoice_lines
 
         filtered_lines = []
@@ -202,11 +269,11 @@ class PosOrder(models.Model):
             vals = command[2] or {}
             product_id = vals.get("product_id")
 
-            # Excluir la línea del producto de recargo de la factura
-            if product_id == surcharge_product.id:
+            # El recargo y su redondeo se facturan en la nota de débito, no en la factura base.
+            if product_id in financial_product_ids:
                 _logger.warning(
-                    "PCI ND: excluyendo producto de recargo %s de invoice_line_ids",
-                    surcharge_product.display_name,
+                    "PCI ND: excluyendo producto financiero %s de invoice_line_ids",
+                    product_id,
                 )
                 continue
 

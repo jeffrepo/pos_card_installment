@@ -6,8 +6,12 @@
         <field name="inherit_id" ref="point_of_sale.pos_config_view_form"/>
         <field name="arch" type="xml">
             <setting id="other_devices" position="after">
-                <setting string="Recargo financiero">
+                <setting string="Tarjeta / cuotas">
                     <field name="pci_surcharge_product_id"/>
+                    <field name="pci_rounding_product_id"/>
+                    <div class="text-muted">
+                        El producto de ajuste debe estar disponible en el POS y no tener impuestos.
+                    </div>
                 </setting>
             </setting>
         </field>
