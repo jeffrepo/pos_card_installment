@@ -44,23 +44,3 @@ class PosPayment(models.Model):
 
     def write(self, vals):
         return super().write(self._normalize_pci_relation_vals(vals))
-
-    @api.model
-    def _load_pos_data_fields(self, config):
-        fields_list = super()._load_pos_data_fields(config)
-        extra_fields = [
-            "card_id",
-            "installment_id",
-            "pci_card_ref_id",
-            "pci_installment_ref_id",
-            "net_amount",
-            "financing_surcharge",
-            "rounding_adjustment",
-            "pci_surcharge_amount",
-            "total_amount",
-            "pci_debit_note_move_id",
-        ]
-        for field_name in extra_fields:
-            if field_name not in fields_list:
-                fields_list.append(field_name)
-        return fields_list
