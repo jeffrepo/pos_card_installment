@@ -163,28 +163,17 @@ function setOrderlineQty(line, qty) {
     }
 }
 
-function getTotalFinancingSurcharge(order) {
+function getTotalCardAdjustment(order) {
     const payments = order?.payment_ids || [];
     return roundMoney(payments.reduce((total, payment) => {
         if (!payment.installment_id && !payment.pci_installment_ref_id) {
             return total;
         }
-        return total + Number(payment.financing_surcharge || 0);
-    }, 0));
-}
-
-function hasInstallmentPayments(order) {
-    return Array.from(order?.payment_ids || []).some((payment) => {
-        return Boolean(payment.installment_id || payment.pci_installment_ref_id);
-    });
-}
-
-function getTotalRoundingAdjustment(order) {
-    return roundMoney(Array.from(order?.payment_ids || []).reduce((total, payment) => {
-        if (!payment.installment_id && !payment.pci_installment_ref_id) {
-            return total;
-        }
-        return total + Number(payment.rounding_adjustment || 0);
+        return (
+            total +
+            Number(payment.financing_surcharge || 0) +
+            Number(payment.rounding_adjustment || 0)
+        );
     }, 0));
 }
 
@@ -257,15 +246,6 @@ async function getCachedSurchargeProduct(screen) {
         "pci_surcharge_product_id",
         "pci_surcharge_product_cache",
         "surcharge"
-    );
-}
-
-async function getCachedRoundingProduct(screen) {
-    return getCachedConfiguredProduct(
-        screen,
-        "pci_rounding_product_id",
-        "pci_rounding_product_cache",
-        "rounding"
     );
 }
 
@@ -400,75 +380,8 @@ async function upsertSurchargeLine(screen, order, surchargeAmount) {
     return line;
 }
 
-async function clearRoundingLine(screen, order) {
-    const product = await getCachedRoundingProduct(screen);
-    if (!product?.id) {
-        return;
-    }
-
-    const line = findProductLine(order, product.id);
-    if (line) {
-        removeOrderline(order, line);
-        await waitPosRecompute();
-    }
-}
-
-async function upsertRoundingLine(screen, order) {
-    const adjustment = getTotalRoundingAdjustment(order);
-    const product = await getCachedRoundingProduct(screen);
-
-    if (!product?.id) {
-        if (adjustment > 0) {
-            screen.dialog.add(AlertDialog, {
-                title: _t("Falta configuración"),
-                body: _t(
-                    "Configure un producto sin impuestos para el ajuste de redondeo de tarjeta/cuotas."
-                ),
-            });
-        }
-        return null;
-    }
-
-    let line = findProductLine(order, product.id);
-
-    if (!hasInstallmentPayments(order)) {
-        removeOrderline(order, line);
-        return null;
-    }
-
-    if (Array.isArray(product.taxes_id) && product.taxes_id.length) {
-        removeOrderline(order, line);
-        screen.dialog.add(AlertDialog, {
-            title: _t("Configuración inválida"),
-            body: _t("El producto de ajuste de redondeo no debe tener impuestos de venta."),
-        });
-        return null;
-    }
-
-    console.log("PCI rounding adjustment", {
-        adjustment,
-    });
-
-    if (adjustment <= 0) {
-        removeOrderline(order, line);
-        return null;
-    }
-
-    if (line) {
-        setOrderlinePrice(line, adjustment);
-        setOrderlineQty(line, 1);
-    } else {
-        line = await addProductToOrder(screen, product, adjustment);
-    }
-
-    await waitPosRecompute();
-    return line;
-}
-
-async function refreshFinancialLines(screen, order) {
-    await clearRoundingLine(screen, order);
-    await upsertSurchargeLine(screen, order, getTotalFinancingSurcharge(order));
-    await upsertRoundingLine(screen, order);
+async function refreshSurchargeLine(screen, order) {
+    await upsertSurchargeLine(screen, order, getTotalCardAdjustment(order));
     screen.render(true);
 }
 patch(PaymentScreen.prototype, {
@@ -586,15 +499,13 @@ patch(PaymentScreen.prototype, {
             activePaymentLine.rounding_adjustment = roundedAdjustment;
             activePaymentLine.total_amount = roundedTotal;
     
-            // La línea de recargo contiene solo el recargo financiero real. El ajuste
-            // que lleva el total al entero siguiente se registra en otro producto.
-            await clearRoundingLine(this, order);
-            await upsertSurchargeLine(this, order, getTotalFinancingSurcharge(order));
+            // El recargo financiero y el redondeo se contabilizan en el mismo producto.
+            // El desglose se conserva en la línea de pago para fines de auditoría.
+            await upsertSurchargeLine(this, order, getTotalCardAdjustment(order));
 
             const paymentTotal = roundedTotal;
             setPaymentAmount(activePaymentLine, paymentTotal);
             await waitPosRecompute();
-            await upsertRoundingLine(this, order);
 
             if (typeof order.selectPaymentline === "function") {
                 order.selectPaymentline(activePaymentLine);
@@ -654,7 +565,7 @@ patch(PaymentScreen.prototype, {
                 lineToDelete.pci_installment_ref_id = 0;
             }
 
-            await refreshFinancialLines(this, order);
+            await refreshSurchargeLine(this, order);
 
             return result;
         } catch (error) {
