@@ -163,6 +163,21 @@ function setOrderlineQty(line, qty) {
     }
 }
 
+function setOrderlineDiscount(line, discount) {
+    if (!line) {
+        return;
+    }
+
+    const value = Math.max(0, Math.min(100, Number(discount || 0)));
+    if (typeof line.setDiscount === "function") {
+        line.setDiscount(value);
+    } else if (typeof line.set_discount === "function") {
+        line.set_discount(value);
+    } else {
+        line.discount = value;
+    }
+}
+
 function getTotalCardAdjustment(order) {
     const payments = order?.payment_ids || [];
     return roundMoney(payments.reduce((total, payment) => {
@@ -317,6 +332,7 @@ async function upsertSurchargeLine(screen, order, surchargeAmount) {
     if (line) {
         setOrderlinePrice(line, 0);
         setOrderlineQty(line, 1);
+        setOrderlineDiscount(line, 0);
         await waitPosRecompute();
     }
 
@@ -326,6 +342,7 @@ async function upsertSurchargeLine(screen, order, surchargeAmount) {
     if (line) {
         setOrderlinePrice(line, priceUnit);
         setOrderlineQty(line, 1);
+        setOrderlineDiscount(line, 0);
     } else {
         line = await addProductToOrder(screen, product, priceUnit);
     }
@@ -333,6 +350,8 @@ async function upsertSurchargeLine(screen, order, surchargeAmount) {
     if (!line) {
         return null;
     }
+
+    setOrderlineDiscount(line, 0);
 
     // El recargo almacenado en los pagos es un importe final con impuestos.
     // Medimos el impacto real de la línea para no asumir una tasa ni price_include.
@@ -369,10 +388,72 @@ async function upsertSurchargeLine(screen, order, surchargeAmount) {
 
     await waitPosRecompute();
 
+    // Product Price puede estar configurado sin decimales. En ese caso, el precio
+    // unitario no puede absorber diferencias de centavos (con IVA, cada salto puede
+    // valer más de una unidad). Dejamos el precio por encima del objetivo y usamos
+    // el descuento, que conserva decimales, para alcanzar el total bruto exacto.
+    let currentTotal = roundMoney(getOrderTotal(order));
+    let realDelta = roundMoney(currentTotal - baseTotal);
+
+    if (realDelta > 0 && realDelta < targetSurcharge) {
+        const storedPrice = Number(line.price_unit || priceUnit || 0);
+        const raisedPrice = Math.max(
+            storedPrice + 1,
+            Math.ceil(storedPrice * (targetSurcharge / realDelta))
+        );
+        setOrderlinePrice(line, raisedPrice);
+        setOrderlineQty(line, 1);
+        setOrderlineDiscount(line, 0);
+        await waitPosRecompute();
+    }
+
+    let discount = Number(line.discount || 0);
+    for (let i = 0; i < 12; i++) {
+        currentTotal = roundMoney(getOrderTotal(order));
+        realDelta = roundMoney(currentTotal - baseTotal);
+        const diff = roundMoney(targetSurcharge - realDelta);
+
+        console.log("PCI surcharge discount calibration", {
+            step: i,
+            baseTotal,
+            currentTotal,
+            targetSurcharge,
+            realDelta,
+            diff,
+            priceUnit: line.price_unit,
+            discount,
+        });
+
+        if (diff === 0 || realDelta <= 0) {
+            break;
+        }
+
+        const currentMultiplier = (100 - discount) / 100;
+        const desiredMultiplier = currentMultiplier * (targetSurcharge / realDelta);
+        discount = roundPrice(100 * (1 - desiredMultiplier));
+        discount = Math.max(0, Math.min(99.999999, discount));
+        setOrderlineDiscount(line, discount);
+        await waitPosRecompute();
+    }
+
+    currentTotal = roundMoney(getOrderTotal(order));
+    realDelta = roundMoney(currentTotal - baseTotal);
+
+    console.log("PCI surcharge calibration final", {
+        baseTotal,
+        currentTotal,
+        targetSurcharge,
+        realDelta,
+        diff: roundMoney(targetSurcharge - realDelta),
+        priceUnit: line.price_unit,
+        discount: line.discount,
+    });
+
     console.log("PCI order lines after surcharge", getOrderLines(order).map((line) => ({
         product: line.product_id?.display_name || line.product_id?.name,
         price_unit: line.price_unit,
         qty: line.qty,
+        discount: line.discount,
         price_subtotal: line.price_subtotal,
         price_subtotal_incl: line.price_subtotal_incl,
     })));
