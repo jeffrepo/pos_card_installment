@@ -6,7 +6,7 @@
         <field name="inherit_id" ref="point_of_sale.pos_config_view_form"/>
         <field name="arch" type="xml">
             <setting id="other_devices" position="after">
-                <setting string="Recargo financiero">
+                <setting string="Recargo financiero de tarjeta / cuotas">
                     <field name="pci_surcharge_product_id"/>
                 </setting>
             </setting>

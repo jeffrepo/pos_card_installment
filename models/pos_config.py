@@ -13,8 +13,6 @@ class PosConfig(models.Model):
         domain=[("available_in_pos", "=", True)],
         help="Producto que el POS agregará como línea de recargo cuando se confirme tarjeta/cuotas.",
     )
-
-
     @api.model
     def _load_pos_data_read(self, records, config):
         read_records = super()._load_pos_data_read(records, config)
@@ -27,7 +25,5 @@ class PosConfig(models.Model):
                 if rec.pci_surcharge_product_id
                 else False
             )
-
         _logger.warning("PCI pos.config read_records: %s", read_records)
         return read_records
-
