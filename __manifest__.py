@@ -1,6 +1,6 @@
 {
     "name": "POS Card Installment",
-    "version": "19.0.1.2.1",
+    "version": "19.0.1.2.2",
     "summary": "Card/installment selection in POS reusing existing payment surcharge logic",
     "category": "Point of Sale",
     "author": "Silva Technologies",

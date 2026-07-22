@@ -395,12 +395,14 @@ async function upsertSurchargeLine(screen, order, surchargeAmount) {
     let currentTotal = roundMoney(getOrderTotal(order));
     let realDelta = roundMoney(currentTotal - baseTotal);
 
-    if (realDelta > 0 && realDelta < targetSurcharge) {
-        const storedPrice = Number(line.price_unit || priceUnit || 0);
-        const raisedPrice = Math.max(
-            storedPrice + 1,
-            Math.ceil(storedPrice * (targetSurcharge / realDelta))
-        );
+    if (realDelta < targetSurcharge) {
+        const storedPrice = Number(line.price_unit || 0);
+        const raisedPrice = realDelta > 0 && storedPrice > 0
+            ? Math.max(
+                  storedPrice + 1,
+                  Math.ceil(storedPrice * (targetSurcharge / realDelta))
+              )
+            : Math.max(1, Math.ceil(targetSurcharge));
         setOrderlinePrice(line, raisedPrice);
         setOrderlineQty(line, 1);
         setOrderlineDiscount(line, 0);
